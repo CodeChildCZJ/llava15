@@ -20,10 +20,11 @@ import shutil
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
 import torch
 from llava.model import *
+from llava.model.language_model.llava_llama_masked import LlavaLlamaForCausalLMMasked
 from llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 
-def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, **kwargs):
+def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, use_masked_model=False, **kwargs):
     kwargs = {"device_map": device_map, **kwargs}
 
     if device != "cuda":
@@ -114,11 +115,18 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 )
             else:
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-                model = LlavaLlamaForCausalLM.from_pretrained(
-                    model_path,
-                    low_cpu_mem_usage=True,
-                    **kwargs
-                )
+                if use_masked_model:
+                    model = LlavaLlamaForCausalLMMasked.from_pretrained(
+                        model_path,
+                        low_cpu_mem_usage=True,
+                        **kwargs
+                    )
+                else:
+                    model = LlavaLlamaForCausalLM.from_pretrained(
+                        model_path,
+                        low_cpu_mem_usage=True,
+                        **kwargs
+                    )
     else:
         # Load language model
         if model_base is not None:
