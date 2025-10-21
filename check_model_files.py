@@ -69,3 +69,7 @@ def check_model_files(model_path):
 if __name__ == "__main__":
     model_path = "/home/czj/llava15_test/llava-v1.5-7b"
     check_model_files(model_path)
+
+
+
+

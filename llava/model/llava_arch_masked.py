@@ -160,6 +160,9 @@ class LlavaMetaModelMasked:
             self.mask_strategy_obj = PositionBasedMaskStrategy(self.mask_ratio, mask_center=False)
         else:
             raise ValueError(f"Unknown mask strategy: {self.mask_strategy}")
+        
+        print(f"[MASK] strategy={self.mask_strategy}")
+
 
     def get_vision_tower(self):
         vision_tower = getattr(self, 'vision_tower', None)

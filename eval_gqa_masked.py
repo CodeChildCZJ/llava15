@@ -17,6 +17,8 @@ from tqdm import tqdm
 import numpy as np
 import random
 
+from gqa_eval.pred_gt_match import compute_match
+
 # 固定随机种子
 def set_seed(seed=42):
     """设置随机种子以确保结果可复现"""
@@ -57,10 +59,10 @@ def setup_args():
     parser = argparse.ArgumentParser(description="GQA评估脚本 - 支持视觉token mask")
     
     # 模型参数
-    parser.add_argument("--model_path", type=str, default="liuhaotian/llava-v1.5-7b")
+    parser.add_argument("--model_path", type=str, default="/home/czj/llava15_test/llava-v1.5-7b")
     parser.add_argument("--model_base", type=str, default=None)
     parser.add_argument("--model_name", type=str, default=None)
-    parser.add_argument("--device", type=str, default="cuda:1", help="设备类型，支持指定GPU如cuda:1")
+    parser.add_argument("--device", type=str, default="cuda:0", help="设备类型，支持指定GPU如cuda:1")
     parser.add_argument("--load_in_8bit", action="store_true", help="使用8bit量化加载模型")
     parser.add_argument("--load_in_4bit", action="store_true", help="使用4bit量化加载模型")
     parser.add_argument("--torch_dtype", type=str, default="float16", choices=["float16", "bfloat16", "float32"], help="模型数据类型")
@@ -73,7 +75,7 @@ def setup_args():
     parser.add_argument("--dataset_name", type=str, default="lmms-lab/GQA", help="HuggingFace数据集名称")
     parser.add_argument("--gqa_split", type=str, default="train_balanced", help="GQA数据集分割")
     parser.add_argument("--conv_mode", type=str, default="llava_v1")
-    parser.add_argument("--num_samples", type=int, default=None, help="评估样本数量")
+    parser.add_argument("--num_samples", type=int, default=2, help="评估样本数量")
     
     # Mask参数
     parser.add_argument("--mask_visual_token", action="store_true", help="是否启用视觉token mask")
@@ -242,7 +244,7 @@ def evaluate_model_on_gqa(
                 if args.visualize_attention:
                     # 需要获取注意力权重
                     outputs = model.generate(
-                        input_ids=input_ids,
+                        inputs=input_ids,
                         images=image_tensor,
                         do_sample=False,
                         temperature=0,
@@ -279,19 +281,23 @@ def evaluate_model_on_gqa(
                     )
             
             # 解码输出
-            input_token_len = input_ids.shape[1]
-            n_diff_input_output = (input_ids != outputs[0][:len(input_ids[0])]).sum().item()
-            if n_diff_input_output > 0:
-                print(f'[Warning] {n_diff_input_output} output_ids are not the same as the input_ids')
+            # input_token_len = input_ids.shape[1]
+            # n_diff_input_output = (input_ids != outputs[0][:len(input_ids[0])]).sum().item()
+            # if n_diff_input_output > 0:
+            #     print(f'[Warning] {n_diff_input_output} output_ids are not the same as the input_ids')
             
-            outputs = tokenizer.batch_decode(outputs[0][input_token_len:], skip_special_tokens=True)[0]
+            outputs = tokenizer.decode(outputs[0], skip_special_tokens=True)
             outputs = outputs.strip()
             
             # 评估答案
             predicted_answer = outputs.lower().strip()
             ground_truth_lower = ground_truth.lower().strip()
             
-            is_correct = predicted_answer == ground_truth_lower
+            matches = compute_match(predicted_answer, ground_truth_lower)
+            if matches["lmms_match"] or matches["loose_match"]:
+                is_correct = True
+            else:
+                is_correct = False
             if is_correct:
                 correct += 1
             total += 1
@@ -321,13 +327,13 @@ def evaluate_model_on_gqa(
         'accuracy': accuracy,
         'correct': correct,
         'total': total,
-        'results': results,
         'mask_config': {
             'mask_visual_token': args.mask_visual_token,
             'mask_ratio': args.mask_ratio,
             'mask_strategy': args.mask_strategy,
             'mask_token_value': args.mask_token_value
-        }
+        },
+        'results': results
     }
     
     return final_results
@@ -381,21 +387,21 @@ def main():
         print("使用本地GQA数据集")
     
     # 测试数据加载
-    print("测试数据加载...")
-    try:
-        test_dataset = gqa_loader.load_dataset(split=args.gqa_split, num_samples=1)
-        dataset_info = gqa_loader.get_dataset_info(test_dataset)
-        print(f"数据集信息: {dataset_info}")
+    # print("测试数据加载...")
+    # try:
+    #     test_dataset = gqa_loader.load_dataset(split=args.gqa_split, num_samples=1)
+    #     dataset_info = gqa_loader.get_dataset_info(test_dataset)
+    #     print(f"数据集信息: {dataset_info}")
         
-        # 显示第一个样本的结构
-        if len(test_dataset) > 0:
-            sample = test_dataset[0]
-            print(f"第一个样本的键: {list(sample.keys())}")
+    #     # 显示第一个样本的结构
+    #     if len(test_dataset) > 0:
+    #         sample = test_dataset[0]
+    #         print(f"第一个样本的键: {list(sample.keys())}")
         
-    except Exception as e:
-        print(f"数据加载测试失败: {e}")
-        print("请检查GQA数据集路径和格式")
-        return
+    # except Exception as e:
+    #     print(f"数据加载测试失败: {e}")
+    #     print("请检查GQA数据集路径和格式")
+    #     return
     
     # 加载模型
     tokenizer, model, image_processor, context_len = load_model_and_tokenizer(

@@ -182,26 +182,99 @@ def process_images(images, image_processor, model_cfg):
     return new_images
 
 
-def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
-    prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split('<image>')]
+# def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
+#     prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split('<image>')]
 
-    def insert_separator(X, sep):
-        return [ele for sublist in zip(X, [sep]*len(X)) for ele in sublist][:-1]
+#     def insert_separator(X, sep):
+#         return [ele for sublist in zip(X, [sep]*len(X)) for ele in sublist][:-1]
 
-    input_ids = []
-    offset = 0
-    if len(prompt_chunks) > 0 and len(prompt_chunks[0]) > 0 and prompt_chunks[0][0] == tokenizer.bos_token_id:
-        offset = 1
-        input_ids.append(prompt_chunks[0][0])
+#     input_ids = []
+#     offset = 0
+#     if len(prompt_chunks) > 0 and len(prompt_chunks[0]) > 0 and prompt_chunks[0][0] == tokenizer.bos_token_id:
+#         offset = 1
+#         input_ids.append(prompt_chunks[0][0])
 
-    for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
-        input_ids.extend(x[offset:])
+#     for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
+#         input_ids.extend(x[offset:])
 
-    if return_tensors is not None:
-        if return_tensors == 'pt':
-            return torch.tensor(input_ids, dtype=torch.long)
-        raise ValueError(f'Unsupported tensor type: {return_tensors}')
-    return input_ids
+#     if return_tensors is not None:
+#         if return_tensors == 'pt':
+#             return torch.tensor(input_ids, dtype=torch.long)
+#         raise ValueError(f'Unsupported tensor type: {return_tensors}')
+#     return input_ids
+
+
+def tokenizer_image_token(
+    prompts,
+    tokenizer,
+    image_token_index=IMAGE_TOKEN_INDEX,
+    return_tensors=None,
+    padding_side="right",  # "left" or "right"
+):
+    """
+    将文本中 <image> 替换为 image_token_index，并进行可选的 batch padding。
+    - 支持单个字符串或字符串列表。
+    - 支持左/右 padding。
+    - 保证返回格式统一。
+    """
+    if isinstance(prompts, str):
+        prompts = [prompts]
+
+    all_input_ids = []
+    for prompt in prompts:
+        # 按 <image> 拆分
+        prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split("<image>")]
+
+        # 插入 <image> 占位符
+        def insert_separator(X, sep):
+            return [ele for sublist in zip(X, [sep] * len(X)) for ele in sublist][:-1]
+
+        input_ids = []
+        offset = 0
+        if (
+            len(prompt_chunks) > 0
+            and len(prompt_chunks[0]) > 0
+            and prompt_chunks[0][0] == tokenizer.bos_token_id
+        ):
+            offset = 1
+            input_ids.append(prompt_chunks[0][0])
+
+        for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
+            input_ids.extend(x[offset:])
+
+        all_input_ids.append(input_ids)
+
+    # 不需要 tensor，直接返回 list[list[int]]
+    if return_tensors is None:
+        return all_input_ids
+
+    # 否则返回 tensor 并自动 padding
+    if return_tensors == "pt":
+        max_len = max(len(x) for x in all_input_ids)
+        padded = torch.full(
+            (len(all_input_ids), max_len),
+            tokenizer.pad_token_id,
+            dtype=torch.long,
+        )
+
+        for i, x in enumerate(all_input_ids):
+            x_tensor = torch.tensor(x, dtype=torch.long)
+            if padding_side == "right":
+                padded[i, : len(x)] = x_tensor
+            elif padding_side == "left":
+                padded[i, -len(x) :] = x_tensor
+            else:
+                raise ValueError(f"Unsupported padding side: {padding_side}")
+
+        attention_mask = padded.ne(tokenizer.pad_token_id).long()
+        return {"input_ids": padded, "attention_mask": attention_mask}
+
+    raise ValueError(f"Unsupported tensor type: {return_tensors}")
+
+
+
+
+
 
 
 def get_model_name_from_path(model_path):

@@ -108,33 +108,59 @@ class LlavaLlamaForCausalLMMasked(LlamaForCausalLM, LlavaMetaForCausalLMMasked):
             return_dict=return_dict
         )
 
+    @torch.no_grad()
     def generate(
         self,
-        images,
-        image_sizes=None,
+        inputs: Optional[torch.Tensor] = None,
+        images: Optional[torch.Tensor] = None,
+        image_sizes: Optional[torch.Tensor] = None,
         **kwargs,
-    ):
-        # 获取注意力权重用于mask策略
-        attention_weights = kwargs.pop('attention_weights', None)
-        
+    ) -> Union[GenerateOutput, torch.LongTensor]:
+        position_ids = kwargs.pop("position_ids", None)
+        attention_mask = kwargs.pop("attention_mask", None)
+        if "inputs_embeds" in kwargs:
+            raise NotImplementedError("`inputs_embeds` is not supported")
+
         if images is not None:
             (
-                input_ids,
+                inputs,
                 position_ids,
                 attention_mask,
-                past_key_values,
+                _,
                 inputs_embeds,
-                labels
+                _
             ) = self.prepare_inputs_labels_for_multimodal(
-                input_ids=kwargs.get('input_ids'),
-                position_ids=kwargs.get('position_ids'),
-                attention_mask=kwargs.get('attention_mask'),
-                past_key_values=kwargs.get('past_key_values'),
-                labels=kwargs.get('labels'),
-                images=images,
-                image_sizes=image_sizes,
-                attention_weights=attention_weights
+                inputs,
+                position_ids,
+                attention_mask,
+                None,
+                None,
+                images,
+                image_sizes=image_sizes
             )
-            kwargs['inputs_embeds'] = inputs_embeds
+        else:
+            inputs_embeds = self.get_model().embed_tokens(inputs)
 
-        return super().generate(**kwargs)
+        return super().generate(
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds,
+            **kwargs
+        )
+
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None,
+                                      inputs_embeds=None, **kwargs):
+        images = kwargs.pop("images", None)
+        image_sizes = kwargs.pop("image_sizes", None)
+        inputs = super().prepare_inputs_for_generation(
+            input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
+        )
+        if images is not None:
+            inputs['images'] = images
+        if image_sizes is not None:
+            inputs['image_sizes'] = image_sizes
+        return inputs
+
+from transformers import AutoConfig, AutoModelForCausalLM
+AutoConfig.register("llava_llama_masked", LlavaConfigMasked)
+AutoModelForCausalLM.register(LlavaConfigMasked, LlavaLlamaForCausalLMMasked)
