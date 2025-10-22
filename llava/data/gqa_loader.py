@@ -98,6 +98,9 @@ class GQALoader:
         cache_path = os.path.join(cache_dir, f"{split_base}_arrow")
 
         # 若存在 Arrow 缓存
+        print(f"cache_path: {cache_path}")
+        print(f"use_cache: {use_cache}")
+        print(f"os.path.exists(cache_path): {os.path.exists(cache_path)}")
         if use_cache and os.path.exists(cache_path):
             print(f"从 Arrow 缓存加载: {cache_path}")
             dataset = load_from_disk(cache_path)
