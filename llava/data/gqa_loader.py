@@ -117,43 +117,134 @@ class GQALoader:
         instruction_df = pd.read_parquet(inst_files[0])
         print(f"指令数据: {len(instruction_df)} 条")
 
+        instruction_ds = Dataset.from_pandas(instruction_df)
+
+        if num_samples:
+             instruction_df = instruction_df.head(num_samples)
+
         image_dict = self._parallel_read_parquets(img_files, "id")
         print(f"图像数据: {len(image_dict)} 张")
 
-        samples = []
-        for _, row in instruction_df.iterrows():
-            if num_samples and len(samples) >= num_samples:
-                break
-            img_id = row.get("imageId")
-            if not img_id or img_id not in image_dict:
-                continue
-            samples.append({
-                "id": row.get("id", ""),
-                "imageId": img_id,
-                "question": row.get("question", ""),
-                "answer": row.get("answer", ""),
-                "image_data": image_dict[img_id],
-            })
+        print("释放 instruction_df 内存...")
+        del instruction_df
 
-        dataset = Dataset.from_list(samples)
+        # samples = []
+        # for _, row in instruction_df.iterrows():
+        #     if num_samples and len(samples) >= num_samples:
+        #         break
+        #     img_id = row.get("imageId")
+        #     if not img_id or img_id not in image_dict:
+        #         continue
+        #     samples.append({
+        #         "id": row.get("id", ""),
+        #         "imageId": img_id,
+        #         "question": row.get("question", ""),
+        #         "answer": row.get("answer", ""),
+        #         "image_data": image_dict[img_id],
+        #     })
+
+        # dataset = Dataset.from_list(samples)
+
+        def add_image_data(sample: Dict) -> Dict:
+            img_id = sample.get("imageId")
+            if img_id and img_id in image_dict:
+                sample["image_data"] = image_dict[img_id]
+            else:
+                # 标记以便后续过滤（或者你也可以在这里就返回 None）
+                sample["image_data"] = None 
+            return sample
+        print("使用 .map() 合并图像数据...")
+        # 使用 map 进行高效合并，利用多核
+        dataset = instruction_ds.map(
+            add_image_data,
+            # num_proc=max(self.num_workers, 1), # 使用多进程加速 map
+            num_proc=1, 
+            load_from_cache_file=False,
+            desc="Merging images into instructions"
+        )
+        
+        # 6. 过滤掉那些没有匹配到图像的样本
+        print("过滤无效样本...")
+        dataset = dataset.filter(lambda x: x["image_data"] is not None)
+
 
         # 缓存为 Arrow 格式
         dataset.save_to_disk(cache_path)
-        print(f"已缓存 {len(samples)} 条样本到 {cache_path}（Arrow 格式）")
+        print(f"已缓存 {len(dataset)} 条样本到 {cache_path}（Arrow 格式）")
 
-        print(f"成功加载 {len(samples)} 条样本")
+        print(f"成功加载 {len(dataset)} 条样本")
         return dataset
 
 
     # ------------------------------------------------------------------
-    def _load_remote_dataset(self, split: str, num_samples: Optional[int]) -> Dataset:
-        """加载远程 HuggingFace 数据集"""
+    def _load_remote_dataset(self, split: str, num_samples: Optional[int] = None) -> Dataset:
+        """
+        加载远程 HuggingFace GQA 数据集 (lmms-lab/GQA)
+        自动选择 *_balanced_* > *_all_* 配置并合并 images + instructions。
+        """
         print(f"加载远程 GQA 数据集: {self.dataset_name}, split={split}")
-        ds = load_dataset(self.dataset_name, split=split)
+
+        # 1 构造所有候选配置（优先 balanced）
+        split_base = split.replace("_balanced", "").replace("_all", "")
+        possible_insts = [
+            f"{split_base}_balanced_instructions",
+            f"{split_base}_all_instructions",
+        ]
+        possible_imgs = [
+            f"{split_base}_balanced_images",
+            f"{split_base}_all_images",
+        ]
+
+        # 2 查询 HuggingFace 仓库的可用配置
+        from datasets import get_dataset_config_names
+        available = get_dataset_config_names(self.dataset_name)
+        print(f"可用配置: {available} ")
+
+        # 3 选中第一个存在的配置
+        inst_cfg = next((cfg for cfg in possible_insts if cfg in available), None)
+        img_cfg  = next((cfg for cfg in possible_imgs  if cfg in available), None)
+
+        if not inst_cfg or not img_cfg:
+            raise ValueError(f"在 {self.dataset_name} 中未找到匹配配置：{possible_insts + possible_imgs}")
+
+        # 4 加载两个子集
+        from datasets import DatasetDict
+        print(f"-> 使用 instructions 配置: {inst_cfg}")
+        inst_ds_all = load_dataset(self.dataset_name, inst_cfg)
+        inst_ds = next(iter(inst_ds_all.values())) if isinstance(inst_ds_all, DatasetDict) else inst_ds_all
+        print(f"inst_ds: {inst_ds}")
+        print(f"-> 使用 images 配置: {img_cfg}")
+        img_ds_all = load_dataset(self.dataset_name, img_cfg)
+        img_ds = next(iter(img_ds_all.values())) if isinstance(img_ds_all, DatasetDict) else img_ds_all
+        print(f"img_ds: {img_ds}")
+
+        # 5 pandas 合并
+        inst_df = inst_ds.to_pandas()
+        img_df  = img_ds.to_pandas()
+
         if num_samples:
-            ds = ds.select(range(min(num_samples, len(ds))))
-        print(f"远程数据加载完成，共 {len(ds)} 条")
-        return ds
+            inst_df = inst_df.head(num_samples)
+
+        image_dict = dict(zip(img_df["id"], img_df["image"]))
+
+        def add_image_data(sample: Dict) -> Dict:
+            img_id = sample.get("imageId")
+            sample["image_data"] = image_dict.get(img_id)
+            return sample
+
+        instruction_ds = Dataset.from_pandas(inst_df)
+        dataset = instruction_ds.map(
+            add_image_data,
+            num_proc=1,
+            load_from_cache_file=False,
+            desc="Merging remote images into instructions"
+        )
+
+        dataset = dataset.filter(lambda x: x["image_data"] is not None)
+        print(f"合并完成，共 {len(dataset)} 条样本（远程）")
+        return dataset
+
+
 
     # ------------------------------------------------------------------
     def process_sample(self, sample: Dict) -> Dict:
@@ -201,8 +292,9 @@ class GQALoader:
         return batch
 
     # ------------------------------------------------------------------
-    def as_dataloader(self, split: str, num_samples: Optional[int] = None):
-        dataset = self._load_local_dataset(split, num_samples) if self.is_local else self._load_remote_dataset(split, num_samples)
+    def as_dataloader(self, split: str, num_samples: Optional[int] = None, dataset: Dataset = None):
+        if dataset is None:
+            dataset = self._load_local_dataset(split, num_samples) if self.is_local else self._load_remote_dataset(split, num_samples)
         dataloader = DataLoader(
             dataset,
             batch_size=self.batch_size,
@@ -222,6 +314,7 @@ def test_split(split_name: str, num_samples: int = None):
     print("=" * 80)
 
     loader = GQALoader("/home/Dataset/Dataset/GQA")
+    # loader = GQALoader("lmms-lab/GQA")
 
     try:
         import time
@@ -247,10 +340,14 @@ def test_split(split_name: str, num_samples: int = None):
 if __name__ == "__main__":
     # 依次测试各种分割类型
     splits_to_test = [
-        "train", "val", 
+        # "train", 
+        # "val", 
         "testdev",
-        "challenge", "submission",
-        "test", "train_all", "val_balanced"
+        # "challenge", 
+        # "submission",
+        # "test", 
+        # "train_all", 
+        # "val_balanced"
     ]
 
 
