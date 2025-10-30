@@ -35,3 +35,9 @@ ckpts*
 serve_images/
 lmms-eval/
 *.mp4
+attn_layerwise_anim/
+fastv_log/
+fastv_log_anim/
+kunkun_layer_wise/
+kunkun_png/
+kunkun_step_wise/
