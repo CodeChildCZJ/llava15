@@ -220,11 +220,13 @@ def tokenizer_image_token(
     if isinstance(prompts, str):
         prompts = [prompts]
 
+    tokenizer.padding_side = padding_side
+
     all_input_ids = []
     for prompt in prompts:
         # 按 <image> 拆分
         prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split("<image>")]
-
+        
         # 插入 <image> 占位符
         def insert_separator(X, sep):
             return [ele for sublist in zip(X, [sep] * len(X)) for ele in sublist][:-1]
@@ -243,31 +245,19 @@ def tokenizer_image_token(
             input_ids.extend(x[offset:])
 
         all_input_ids.append(input_ids)
-
+    
     # 不需要 tensor，直接返回 list[list[int]]
     if return_tensors is None:
         return all_input_ids
 
     # 否则返回 tensor 并自动 padding
     if return_tensors == "pt":
-        max_len = max(len(x) for x in all_input_ids)
-        padded = torch.full(
-            (len(all_input_ids), max_len),
-            tokenizer.pad_token_id,
-            dtype=torch.long,
+        padded = tokenizer.pad(
+            {"input_ids": all_input_ids},
+            padding=True,
+            return_tensors="pt"
         )
-
-        for i, x in enumerate(all_input_ids):
-            x_tensor = torch.tensor(x, dtype=torch.long)
-            if padding_side == "right":
-                padded[i, : len(x)] = x_tensor
-            elif padding_side == "left":
-                padded[i, -len(x) :] = x_tensor
-            else:
-                raise ValueError(f"Unsupported padding side: {padding_side}")
-
-        attention_mask = padded.ne(tokenizer.pad_token_id).long()
-        return {"input_ids": padded, "attention_mask": attention_mask}
+        return padded
 
     raise ValueError(f"Unsupported tensor type: {return_tensors}")
 

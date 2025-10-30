@@ -1,8 +1,9 @@
 # gqa_eval/prompt.py
 import torch
 from concurrent.futures import ThreadPoolExecutor
-from llava.constants import DEFAULT_IMAGE_TOKEN
+from llava.constants import DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
 from llava.conversation import conv_templates
+from llava.mm_utils import tokenizer_image_token
 
 
 def build_prompt(question: str, conv_mode: str = "llava_v1") -> str:
@@ -14,13 +15,7 @@ def build_prompt(question: str, conv_mode: str = "llava_v1") -> str:
 
 
 def build_multimodal_batch_inputs(
-    batch,
-    tokenizer,
-    image_processor,
-    device,
-    dtype=torch.float16,
-    conv_mode="llava_v1",
-    max_workers: int = 8,
+    batch, tokenizer, image_processor, device, dtype=torch.float16, conv_mode="llava_v1", max_workers=8
 ):
     """
     批量构建多模态输入 (文本 + 图像)
@@ -38,12 +33,18 @@ def build_multimodal_batch_inputs(
         prompts.append(conv.get_prompt())
 
     # 2 Tokenizer 批量编码（自动 padding）
-    encoded = tokenizer(
+
+
+    tok = tokenizer_image_token(
         prompts,
-        padding=True,
-        truncation=False,
-        return_tensors="pt"
-    ).to(device)
+        tokenizer,
+        IMAGE_TOKEN_INDEX,
+        return_tensors="pt",
+        padding_side=tokenizer.padding_side # 或 "left"
+    )
+    input_ids = tok["input_ids"]
+    attention_mask = tok["attention_mask"]
+
 
     # 3 图像并行预处理
     def _process_img(s):
@@ -53,15 +54,14 @@ def build_multimodal_batch_inputs(
         if image.mode != "RGB":
             image = image.convert("RGB")
         try:
-            return image_processor(image, return_tensors="pt")["pixel_values"]
+            return image_processor(image, return_tensors="pt")["pixel_values"].to(device, dtype)
         except Exception as e:
             print(f"[warn] 图像处理失败: {e}")
             return None
 
     with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as ex:
-        img_tensors = list(ex.map(_process_img, batch))
+        image_tensors = list(ex.map(_process_img, batch))   
 
-    img_tensors = [x for x in img_tensors if x is not None]
-    image_tensors = torch.cat(img_tensors, dim=0).to(device, dtype=dtype, non_blocking=True)
-
-    return encoded["input_ids"], image_tensors
+    image_sizes = [s["image"].size for s in batch]
+    # print(input_ids, image_tensors)
+    return input_ids, attention_mask, torch.cat(image_tensors, dim=0), image_sizes

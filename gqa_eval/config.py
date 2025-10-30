@@ -11,7 +11,7 @@ def get_args():
     parser.add_argument("--load_in_8bit", action="store_true")
 
     # 超参数
-    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--max_new_tokens", type=int, default=64, help="model生成最大tokens数")
 
@@ -27,7 +27,7 @@ def get_args():
     parser.add_argument("--mask_token_value", type=float, default=0.0)
 
     # 数据集
-    parser.add_argument("--dataset_path", type=str, default="/home/Dataset/Dataset/GQA",
+    parser.add_argument("--dataset_path", type=str, default="/home/czj/llava15_test/GQA",
             help="GQA 数据源路径或名称，例如 '/home/Dataset/Dataset/GQA' 或 'lmms-lab/GQA'")
     parser.add_argument("--split", type=str, default="testdev", choices=["train", "val", "testdev", "challenge", "submission", "test", "train_all", "val_balanced"])
     parser.add_argument("--max_samples", type=int, default=None)

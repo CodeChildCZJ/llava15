@@ -27,6 +27,10 @@ def load_llava_model(args):
         load_4bit=args.load_in_4bit,
         load_8bit=args.load_in_8bit,
         use_masked_model=use_masked_model,
+        mask_visual_token=args.mask_visual_token,
+        mask_ratio=args.mask_ratio,
+        mask_strategy=args.mask_strategy,
+        mask_token_value=args.mask_token_value,
     )
 
     # 多GPU并行

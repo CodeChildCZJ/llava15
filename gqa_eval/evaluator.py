@@ -28,7 +28,7 @@ def eval_on_gqa(model, tokenizer, image_processor, gqa_loader, args):
         # ============================================================
         # 构建批量输入（文本+图像）
         # ============================================================
-        input_ids_batch, image_tensors = build_multimodal_batch_inputs(
+        input_ids_batch, attention_mask_batch, image_tensors, image_sizes = build_multimodal_batch_inputs(
             batch, tokenizer, image_processor, args.device, torch.float16, args.conv_mode
         )
 
@@ -40,9 +40,11 @@ def eval_on_gqa(model, tokenizer, image_processor, gqa_loader, args):
         # 模型生成
         # ============================================================
         outputs = model_to_use.generate(
-            inputs=input_ids_batch,
-            images=[img for img in image_tensors],
+            inputs=input_ids_batch.to(args.device),
+            images=image_tensors.to(args.device),
             max_new_tokens=args.max_new_tokens,
+            attention_mask=attention_mask_batch.to(args.device),
+            image_sizes=image_sizes,
             temperature=0,
             do_sample=False,
         )
@@ -78,7 +80,6 @@ def eval_on_gqa(model, tokenizer, image_processor, gqa_loader, args):
                     "matches": batch_matches[i],
                     "is_correct": bool(is_correct[i])
                 })
-
     # ============================================================
     # 汇总与保存
     # ============================================================

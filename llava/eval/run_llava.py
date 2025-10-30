@@ -10,7 +10,6 @@ from llava.constants import (
 )
 from llava.conversation import conv_templates, SeparatorStyle
 from llava.model.builder import load_pretrained_model
-from llava.utils import disable_torch_init
 from llava.mm_utils import (
     process_images,
     tokenizer_image_token,
@@ -23,6 +22,13 @@ import requests
 from PIL import Image
 from io import BytesIO
 import re
+
+def disable_torch_init():
+    import torch
+    import math
+    torch.set_grad_enabled(False)
+    torch.manual_seed(1234)
+    torch.cuda.manual_seed_all(1234)
 
 
 def image_parser(args):

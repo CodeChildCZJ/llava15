@@ -97,8 +97,12 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             else:
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
                 cfg_pretrained = AutoConfig.from_pretrained(model_path)
+                for k, v in kwargs.items():
+                    if hasattr(cfg_pretrained, k):
+                        setattr(cfg_pretrained, k, v)
                 if use_masked_model:
                     print("Using masked LLaVA variant (LlavaLlamaForCausalLMMasked)")
+                    
                     model = LlavaLlamaForCausalLMMasked.from_pretrained(
                         model_base,
                         low_cpu_mem_usage=True,

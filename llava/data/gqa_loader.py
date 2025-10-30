@@ -12,7 +12,9 @@ from PIL import Image
 from datasets import Dataset, load_dataset, load_from_disk
 from torch.utils.data import DataLoader
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from tqdm import tqdm
+import numpy as np
+import gc
 
 
 class GQALoader:
@@ -78,105 +80,114 @@ class GQALoader:
 
     # ------------------------------------------------------------------
     def _load_local_dataset(self, split: str, num_samples: Optional[int], use_cache: bool = True) -> Dataset:
-        """加载本地 GQA parquet 数据（Arrow 缓存版）"""
-        print(f"加载本地 GQA split: {split}")
+        """分块构建 GQA Arrow 缓存（低内存 + 可恢复）"""
+        import pyarrow as pa
+        import pyarrow.dataset as ds
 
+        print(f"加载本地 GQA split: {split}")
         split_base = split.replace("_balanced", "").replace("_all", "")
         instructions_dir = self._find_best_match_dir(split_base, "instructions")
         images_dir = self._find_best_match_dir(split_base, "images")
-
-        if not instructions_dir or not images_dir:
-            raise FileNotFoundError(
-                f"未找到匹配目录，请检查数据路径。\n"
-                f"  根路径: {self.gqa_root}\n"
-                f"  split: {split}\n"
-                f"  可选: train / val / testdev / challenge / submission / test"
-            )
-
         cache_dir = os.path.join(self.gqa_root, ".gqa_cache")
         os.makedirs(cache_dir, exist_ok=True)
         cache_path = os.path.join(cache_dir, f"{split_base}_arrow")
-
-        # 若存在 Arrow 缓存
-        print(f"cache_path: {cache_path}")
-        print(f"use_cache: {use_cache}")
-        print(f"os.path.exists(cache_path): {os.path.exists(cache_path)}")
+        # ---------- 如果缓存存在直接加载 ----------
         if use_cache and os.path.exists(cache_path):
             print(f"从 Arrow 缓存加载: {cache_path}")
-            dataset = load_from_disk(cache_path)
+            ds_cached = load_from_disk(cache_path)
             if num_samples:
-                dataset = dataset.select(range(min(num_samples, len(dataset))))
-            print(f"已加载 {len(dataset)} 条样本（来自缓存）")
-            return dataset
+                ds_cached = ds_cached.select(range(min(num_samples, len(ds_cached))))
+            print(f"✅ 已加载 {len(ds_cached)} 条样本（缓存）")
+            return ds_cached
 
-        # 首次加载 parquet
-        print(f"首次加载 split={split}，读取 parquet 文件...")
+        if not instructions_dir or not images_dir:
+            raise FileNotFoundError(f"未找到匹配目录，请检查路径 {self.gqa_root}")
+
+
+
+        # ---------- 准备数据 ----------
         inst_files = [os.path.join(instructions_dir, f) for f in os.listdir(instructions_dir) if f.endswith(".parquet")]
-        img_files = [os.path.join(images_dir, f) for f in os.listdir(images_dir) if f.endswith(".parquet")]
-
-        if not inst_files or not img_files:
-            raise FileNotFoundError("在指定目录中未找到 parquet 文件")
-
+        img_files  = [os.path.join(images_dir, f) for f in os.listdir(images_dir) if f.endswith(".parquet")]
         instruction_df = pd.read_parquet(inst_files[0])
+        if num_samples:
+            instruction_df = instruction_df.head(num_samples)
         print(f"指令数据: {len(instruction_df)} 条")
 
-        instruction_ds = Dataset.from_pandas(instruction_df)
+        # ---------- Arrow Writer ----------
+        arrow_tmp_path = os.path.join(cache_dir, f"{split_base}_tmp.arrow")
+        sink = pa.OSFile(arrow_tmp_path, "wb")
+        writer = None
+        total_rows = 0
 
-        if num_samples:
-             instruction_df = instruction_df.head(num_samples)
+        def _safe_wrap_image(obj):
+            try:
+                if obj is None:
+                    return None
+                if isinstance(obj, dict) and "bytes" in obj:
+                    return bytes(obj["bytes"])
+                if isinstance(obj, (bytes, bytearray, memoryview)):
+                    return bytes(obj)
+                if isinstance(obj, np.ndarray):
+                    buf = BytesIO()
+                    Image.fromarray(obj).save(buf, format="PNG")
+                    return buf.getvalue()
+                if isinstance(obj, Image.Image):
+                    buf = BytesIO()
+                    obj.save(buf, format="PNG")
+                    return buf.getvalue()
+                return None
+            except Exception:
+                return None
 
-        image_dict = self._parallel_read_parquets(img_files, "id")
-        print(f"图像数据: {len(image_dict)} 张")
+        # ---------- 分块读写 ----------
+        print("开始分块 merge 并写入 Arrow ...")
+        for f in tqdm(img_files, desc="分块写入", ncols=100):
+            df_img = pd.read_parquet(f, columns=["id", "image"])
+            merged = instruction_df.merge(df_img, left_on="imageId", right_on="id", how="inner")
 
-        print("释放 instruction_df 内存...")
-        del instruction_df
+            if merged.empty:
+                continue
+            merged["image_data"] = merged["image"].map(_safe_wrap_image)
+            merged.drop(columns=["image", "id_y"], errors="ignore", inplace=True)
+            merged.rename(columns={"id_x": "id"}, inplace=True)
 
-        # samples = []
-        # for _, row in instruction_df.iterrows():
-        #     if num_samples and len(samples) >= num_samples:
-        #         break
-        #     img_id = row.get("imageId")
-        #     if not img_id or img_id not in image_dict:
-        #         continue
-        #     samples.append({
-        #         "id": row.get("id", ""),
-        #         "imageId": img_id,
-        #         "question": row.get("question", ""),
-        #         "answer": row.get("answer", ""),
-        #         "image_data": image_dict[img_id],
-        #     })
+            # 只保留必要列
+            keep_cols = ["id", "imageId", "question", "answer", "image_data"]
+            merged = merged[[c for c in merged.columns if c in keep_cols]]
 
-        # dataset = Dataset.from_list(samples)
+            # 转 Arrow 表，写入文件
+            table = pa.Table.from_pandas(merged, preserve_index=False)
+            if writer is None:
+                # writer = pa.ipc.new_file(sink, table.schema)
+                writer = pa.ipc.new_stream(sink, table.schema)
+            writer.write_table(table)
+            total_rows += len(merged)
 
-        def add_image_data(sample: Dict) -> Dict:
-            img_id = sample.get("imageId")
-            if img_id and img_id in image_dict:
-                sample["image_data"] = image_dict[img_id]
-            else:
-                # 标记以便后续过滤（或者你也可以在这里就返回 None）
-                sample["image_data"] = None 
-            return sample
-        print("使用 .map() 合并图像数据...")
-        # 使用 map 进行高效合并，利用多核
-        dataset = instruction_ds.map(
-            add_image_data,
-            # num_proc=max(self.num_workers, 1), # 使用多进程加速 map
-            num_proc=1, 
-            load_from_cache_file=False,
-            desc="Merging images into instructions"
-        )
-        
-        # 6. 过滤掉那些没有匹配到图像的样本
-        print("过滤无效样本...")
+            del df_img, merged, table
+            gc.collect()
+
+            if num_samples and total_rows >= num_samples:
+                break
+
+        if writer is None:
+            raise RuntimeError("没有生成有效样本。")
+
+        writer.close()
+        sink.close()
+        print(f"✅ 已写入 {total_rows} 条样本到临时 Arrow 文件")
+
+        # ---------- 保存为 HuggingFace Dataset ----------
+        dataset = Dataset.from_file(arrow_tmp_path)
         dataset = dataset.filter(lambda x: x["image_data"] is not None)
-
-
-        # 缓存为 Arrow 格式
+        if os.path.exists(cache_path):
+            import shutil; shutil.rmtree(cache_path)
         dataset.save_to_disk(cache_path)
-        print(f"已缓存 {len(dataset)} 条样本到 {cache_path}（Arrow 格式）")
-
-        print(f"成功加载 {len(dataset)} 条样本")
+        print(f"✅ Arrow 缓存已保存到 {cache_path}")
+        os.remove(arrow_tmp_path)
         return dataset
+
+
+
 
 
     # ------------------------------------------------------------------
@@ -316,7 +327,7 @@ def test_split(split_name: str, num_samples: int = None):
     print(f"🚀 测试加载 split = '{split_name}'")
     print("=" * 80)
 
-    loader = GQALoader("/home/Dataset/Dataset/GQA")
+    loader = GQALoader("/home/czj/llava15_test/GQA")
     # loader = GQALoader("lmms-lab/GQA")
 
     try:
