@@ -27,6 +27,8 @@ from transformers.generation.utils import GenerateOutput
 from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
 
 
+from llava.utils.visual_mask import build_visual_attention_mask  # << 新增导入
+
 class LlavaConfig(LlamaConfig):
     model_type = "llava_llama"
 
@@ -86,6 +88,26 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 labels,
                 images,
                 image_sizes
+            )
+
+        # ===== 核心：在 super().forward 前，基于两个参数构造 4D 注意力掩码 =====
+        # 通过外部配置设置：
+        #   model.maskVisualFirst: bool  （是否屏蔽 prefill 最后一个 token 对图像）
+        #   model.maskVisualPred:  bool  （是否在生成每步屏蔽对图像）
+        mask_visual_first = bool(getattr(self, "maskVisualFirst", False))
+        mask_visual_pred  = bool(getattr(self, "maskVisualPred", False))
+        pure_text         = bool(getattr(self, "pure_text", False))
+
+        is_image_mask = getattr(self, "_cached_is_image_mask", None)
+        if attention_mask is not None and is_image_mask is not None:
+            # 注意：此处 attention_mask 是 2D (B, K)。我们构造 (B,1,Q,K) additive mask 替换之
+            attention_mask = build_visual_attention_mask(
+                pad_mask_2d=attention_mask,
+                is_image_mask_2d=is_image_mask,
+                past_key_values=past_key_values,
+                mask_visual_first=mask_visual_first,
+                mask_visual_pred=mask_visual_pred,
+                pure_text=pure_text
             )
 
         return super().forward(

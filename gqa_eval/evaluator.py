@@ -20,6 +20,13 @@ def eval_on_gqa(model, tokenizer, image_processor, gqa_loader, args):
     dataloader = gqa_loader.as_dataloader(args.split, args.max_samples)
     model_to_use = model.module if hasattr(model, "module") else model
 
+    # MASK Setting
+    model_to_use.maskVisualFirst = args.mask_visual_first   # True/False
+    model_to_use.maskVisualPred  = args.mask_visual_pred    # True/False
+    model_to_use.pure_text       = args.pure_text          # True/False
+
+    print(f" >>>>> maskVisualFirst: {model_to_use.maskVisualFirst}, maskVisualPred: {model_to_use.maskVisualPred}, pure_text: {model_to_use.pure_text}")
+
     counters = {k: Counter() for k in ["llava_match", "lmms_match", "loose_match"]}
     correct_loose, total = 0, 0
     results = []

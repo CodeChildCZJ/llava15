@@ -37,6 +37,11 @@ def get_args():
     parser.add_argument("--output_dir", type=str, default="./eval_GQA_results/testdev_VQA_100samples")
     parser.add_argument("--save_json", action="store_true")
     parser.add_argument("--save_pred_gt", action="store_true")
+    
+
+    parser.add_argument("--mask_visual_first", action="store_true")
+    parser.add_argument("--mask_visual_pred", action="store_true")
+    parser.add_argument("--pure_text", action="store_true")
 
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()

@@ -140,6 +140,9 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                         **kwargs
                     )
                 else:
+                    rm_keys = ['use_masked_model', 'mask_visual_token', 'mask_ratio', 'mask_strategy', 'mask_token_value']
+                    for k in rm_keys:
+                        kwargs.pop(k, None)
                     model = LlavaLlamaForCausalLM.from_pretrained(
                         model_path,
                         low_cpu_mem_usage=True,
